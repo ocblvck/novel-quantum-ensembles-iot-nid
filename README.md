@@ -7,38 +7,23 @@
 
 A comprehensive evaluation of **Quantum Machine Learning (QML)** for IoT network intrusion detection, comparing **25 distinct model configurations** across quantum kernel methods, variational quantum algorithms, and novel quantum ensemble techniques.
 
-## 🎯 Project Overview
+##  Project Overview
 
 This repository contains the experimental code and dataset for our research paper:
 
 > **"Comprehensive Evaluation of Quantum Machine Learning for IoT Network Intrusion Detection: Novel Ensemble Methods and GPU-Accelerated Analysis"**
-> 
-> *Submitted to IEEE DCAS 2026*
 
 ### Research Objectives
 
 1. **Systematic Comparison**: Evaluate 25 ML models (16 quantum + 9 classical) across multiple configurations
-2. **Novel Ensemble Methods**: Introduce **Quantum Voting Ensemble (QVE)** and **Quantum Weighted Ensemble (QWE)** - techniques unexplored in prior quantum security literature
+2. **Novel Ensemble Methods**: Introduce **Quantum Voting Ensemble (QVE)** and **Quantum Weighted Ensemble (QWE)**
 3. **Scalability Analysis**: Investigate qubit scaling (10 → 16 qubits) and sample size impact (5K → 10K samples)
 4. **GPU Acceleration**: Leverage multi-GPU parallel processing for practical quantum simulation
 5. **NISQ Viability**: Demonstrate practical quantum advantage boundaries for IoT security
 
-## 📊 Key Results
 
-| Model | Accuracy | F1-Score | MCC | Training Time |
-|-------|----------|----------|-----|---------------|
-| **Quantum Voting Ensemble (QVE)** | **99.53%** | **0.9953** | **0.9940** | 18.72s |
-| QSVC (Z-Feature Map) | 99.43% | 0.9943 | 0.9928 | 16.58s |
-| Quantum Random Forest | 93.37% | 0.9337 | 0.9118 | 19.99s |
-| Random Forest (Classical) | 99.70% | 0.9970 | 0.9961 | 0.39s |
 
-**Key Findings:**
-- ✅ QVE achieves **99.53% accuracy** - highest among all quantum models
-- ✅ Z-feature map outperforms ZZ/Pauli by **3.73%** with minimal circuit depth
-- ✅ Precomputed kernel achieves **600,000× speedup** over per-sample computation
-- ✅ All quantum kernels achieve **perfect specificity (1.00)** - zero false positives
-
-## 🏗️ Architecture
+##  Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -78,7 +63,7 @@ This repository contains the experimental code and dataset for our research pape
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 Getting Started
+##  Getting Started
 
 ### Prerequisites
 
@@ -169,7 +154,7 @@ python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
 | `--distributed-ray` | Enable Ray-based distributed execution | `False` |
 | `--ray-address` | Ray cluster address for multi-node | None |
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 quantum-ml-iot-nid/
@@ -186,7 +171,7 @@ quantum-ml-iot-nid/
 └── kernel_cache/                # Precomputed kernel matrices
 ```
 
-## 🔬 Models Evaluated
+##  Models Evaluated
 
 ### Quantum Models (16)
 
@@ -203,7 +188,7 @@ quantum-ml-iot-nid/
 
 SVM (Linear, RBF, Polynomial), Random Forest, Gradient Boosting, Logistic Regression, KNN, Decision Tree, Gaussian Naive Bayes
 
-## 📈 Experimental Configurations
+##  Experimental Configurations
 
 | Config | Qubits | Samples | Purpose |
 |--------|--------|---------|---------|
@@ -211,7 +196,7 @@ SVM (Linear, RBF, Polynomial), Random Forest, Gradient Boosting, Logistic Regres
 | 10q/10K | 10 | 10,000 | Sample size scaling |
 | 16q/5K | 16 | 5,000 | Qubit scalability |
 
-## 🔧 Technical Details
+##  Technical Details
 
 ### Quantum Feature Encoding
 
@@ -232,35 +217,24 @@ SVM (Linear, RBF, Polynomial), Random Forest, Gradient Boosting, Logistic Regres
 - Transpilation optimization level 2
 - Multi-GPU parallel model evaluation
 
-## 📚 Citation
 
-If you use this code in your research, please cite:
 
-```bibtex
-@inproceedings{author2026quantum,
-  title={Comprehensive Evaluation of Quantum Machine Learning for IoT Network Intrusion Detection: Novel Ensemble Methods and GPU-Accelerated Analysis},
-  author={Author, First and Author, Second},
-  booktitle={IEEE DCAS 2026},
-  year={2026}
-}
-```
-
-## 📄 License
+##  License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+##  Acknowledgments
 
 - Dataset: [IoTID20](https://ieee-dataport.org/open-access/iot-network-intrusion-dataset) by Ullah & Mahmoud
 - Quantum Framework: [Qiskit](https://qiskit.org/) by IBM
 - This research was conducted using GPU-accelerated quantum simulation
 
-## 📧 Contact
+##  Contact
 
 - **GitHub**: [@ocblvck](https://github.com/ocblvck)
 
 ---
 
 <p align="center">
-  <b>⚛️ Bridging Quantum Computing and IoT Security ⚛️</b>
+  <b> Bridging Quantum Computing and IoT Security </b>
 </p>
