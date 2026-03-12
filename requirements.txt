@@ -1,26 +1,18 @@
-# Quantum ML for IoT Network Intrusion Detection
-# Requirements file for reproducibility
-
-# Core scientific computing
+# Core dependencies
 numpy>=1.24.0
 pandas>=2.0.0
 scikit-learn>=1.3.0
 
-# Quantum computing
+# Quantum stack
 qiskit>=1.0.0
 qiskit-aer>=0.14.0
 qiskit-machine-learning>=0.7.0
 qiskit-algorithms>=0.3.0
 
-# GPU acceleration (install separately based on CUDA version)
-# qiskit-aer-gpu>=0.14.0  # Uncomment for GPU support
+# Install a CUDA-matched qiskit-aer-gpu build separately when running on GPU.
 
-# Optional: Distributed computing
+# Optional packages
 # ray[default]>=2.9.0
-
-# Optional: GPU monitoring
 # pynvml>=11.5.0
 # psutil>=5.9.0
-
-# Optional: Enhanced serialization
 # dill>=0.3.7

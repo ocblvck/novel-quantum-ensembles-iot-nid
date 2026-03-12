@@ -1,240 +1,76 @@
-# Quantum Machine Learning for IoT Network Intrusion Detection
+# Quantum ML for IoT Intrusion Detection
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Qiskit](https://img.shields.io/badge/Qiskit-1.0+-blueviolet.svg)](https://qiskit.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![CUDA](https://img.shields.io/badge/CUDA-GPU%20Accelerated-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+This repository contains the GPU-focused experiment script used for quantum machine learning experiments on IoT intrusion detection data. The main entry point is `iot_multigpu.py`, which runs quantum models, ensemble variants, and classical baselines through a centralized multi-GPU pipeline.
 
-A comprehensive evaluation of **Quantum Machine Learning (QML)** for IoT network intrusion detection, comparing **25 distinct model configurations** across quantum kernel methods, variational quantum algorithms, and novel quantum ensemble techniques.
+## Repository contents
 
-##  Project Overview
+- `iot_multigpu.py`: main experiment script
+- `requirements.txt`: Python dependencies used for this repo
+- `download_dataset.sh`: dataset download instructions
 
-This repository contains the experimental code and dataset for our research paper:
+## Dataset
 
-> **"Comprehensive Evaluation of Quantum Machine Learning for IoT Network Intrusion Detection: Novel Ensemble Methods and GPU-Accelerated Analysis"**
+The dataset is not stored in this repository. Download the IoTID20 CSV separately and place it in the repository root as `IoT_Original_Distribution.csv`.
 
-### Research Objectives
+Sources:
 
-1. **Systematic Comparison**: Evaluate 25 ML models (16 quantum + 9 classical) across multiple configurations
-2. **Novel Ensemble Methods**: Introduce **Quantum Voting Ensemble (QVE)** and **Quantum Weighted Ensemble (QWE)**
-3. **Scalability Analysis**: Investigate qubit scaling (10 → 16 qubits) and sample size impact (5K → 10K samples)
-4. **GPU Acceleration**: Leverage multi-GPU parallel processing for practical quantum simulation
-5. **NISQ Viability**: Demonstrate practical quantum advantage boundaries for IoT security
+- Kaggle: https://www.kaggle.com/datasets/subhajournal/iotid20-iot-botnet-dataset
+- IEEE DataPort: https://ieee-dataport.org/open-access/iot-network-intrusion-dataset
 
+## Environment
 
+- Python 3.10 or newer
+- NVIDIA GPU with CUDA support
+- Qiskit Aer GPU build compatible with the installed CUDA version
 
-##  Architecture
+Install the base dependencies with:
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           EXPERIMENTAL PIPELINE                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌──────────┐    ┌────────────────────────────────────────┐                 │
-│  │ IoTID20  │───▶│         PREPROCESSING PIPELINE          │                │
-│  │ Dataset  │    │  SelectKBest → MinMaxScaler → PCA       │                │
-│  │ 625,783  │    │  (MI, 2n)      [0, π]       (n comp)    │                │
-│  │ samples  │    └────────────────────────────────────────┘                 │
-│  └──────────┘                        │                                       │
-│                                      ▼                                       │
-│              ┌───────────────────────┴───────────────────────┐              │
-│              │                                               │              │
-│              ▼                                               ▼              │
-│  ┌───────────────────────┐                    ┌──────────────────────────┐  │
-│  │  QUANTUM MODELS (16)  │                    │  CLASSICAL MODELS (9)    │  │
-│  ├───────────────────────┤                    ├──────────────────────────┤  │
-│  │ • QSVC (8 variants)   │                    │ • SVM (Linear/RBF/Poly)  │  │
-│  │   - Z/ZZ/Pauli maps   │                    │ • Random Forest          │  │
-│  │   - Standard/Precomp  │                    │ • Gradient Boosting      │  │
-│  │   - PegasosQSVC       │                    │ • Logistic Regression    │  │
-│  │ • VQC (3 optimizers)  │                    │ • KNN, Decision Tree     │  │
-│  │ • QNN (2 variants)    │                    │ • Gaussian Naive Bayes   │  │
-│  │ • Ensembles (3)       │                    └──────────────────────────┘  │
-│  │   - QVE, QWE, QRF     │                                                  │
-│  └───────────────────────┘                                                  │
-│              │                                               │              │
-│              └───────────────────────┬───────────────────────┘              │
-│                                      ▼                                       │
-│                    ┌─────────────────────────────────┐                      │
-│                    │       EVALUATION METRICS        │                      │
-│                    │  Accuracy, Precision, Recall,   │                      │
-│                    │  F1, Specificity, MCC, Time     │                      │
-│                    └─────────────────────────────────┘                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-##  Getting Started
-
-### Prerequisites
-
-- **Python 3.10+**
-- **NVIDIA GPU** with CUDA support (RTX 3000/4000/A-series recommended)
-- **48GB+ GPU VRAM** for 16-qubit simulations (can run smaller configs with less)
-
-### Installation
-
-1. **Clone the repository:**
 ```bash
-git clone https://github.com/ocblvck/quantum-ml-iot-nid.git
-cd quantum-ml-iot-nid
+pip install -r requirements.txt
 ```
 
-2. **Create a virtual environment:**
+If you are using GPU simulation, install the appropriate `qiskit-aer-gpu` build for your CUDA environment.
+
+## Running the script
+
+Example run:
+
 ```bash
-conda create -n qml-iot python=3.10
-conda activate qml-iot
-```
-
-3. **Install dependencies:**
-```bash
-pip install numpy pandas scikit-learn
-pip install qiskit qiskit-aer-gpu qiskit-machine-learning qiskit-algorithms
-pip install ray[default]  # Optional: for distributed computing
-pip install pynvml psutil  # Optional: for GPU monitoring
-```
-
-4. **Download the dataset:**
-   
-   The IoTID20 dataset is available at: [IoTID20 on Kaggle](https://www.kaggle.com/datasets/subhajournal/iotid20-iot-botnet-dataset)
-   
-   Place the CSV file in the repository root as `IoT_Original_Distribution.csv`
-
-### Usage
-
-#### Basic Run (10 qubits, 5000 samples)
-```bash
-python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
-    --dataset IoT_Original_Distribution.csv --model_group all
-```
-
-#### Run Specific Model Groups
-```bash
-# Quantum SVC models only
-python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
-    --dataset IoT_Original_Distribution.csv --model_group qsvc
-
-# Variational Quantum Classifiers
-python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
-    --dataset IoT_Original_Distribution.csv --model_group vqc
-
-# Quantum ensembles (QVE, QWE, QRF)
-python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
-    --dataset IoT_Original_Distribution.csv --model_group ensemble
-
-# Classical baselines
-python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
-    --dataset IoT_Original_Distribution.csv --model_group classical
-```
-
-#### Advanced Configuration
-```bash
-# 16 qubits with specific GPU settings
-python iot_multigpu.py --num_qubits 16 --sample_size 5000 \
-    --dataset IoT_Original_Distribution.csv --model_group all \
-    --max_gpus 4 --transpile-opt-level 2 --gpus-per-model 2
-
-# Run specific models only
-python iot_multigpu.py --num_qubits 10 --sample_size 5000 \
+python iot_multigpu.py \
+    --num_qubits 10 \
+    --sample_size 5000 \
     --dataset IoT_Original_Distribution.csv \
-    --only-models "QSVC_Z,QSVC_ZZ,Quantum_Voting_Ensemble"
+    --model_group qsvc
 ```
 
-### Command-Line Arguments
+Useful model groups:
 
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--num_qubits` | Number of qubits (equals feature dimensions) | **Required** |
-| `--sample_size` | Number of samples to use from dataset | **Required** |
-| `--dataset` | Path to the CSV dataset | **Required** |
-| `--model_group` | Model category: `all`, `quantum`, `qsvc`, `vqc`, `qnn`, `ensemble`, `classical` | `qsvc` |
-| `--max_gpus` | Maximum number of GPUs to use | Auto-detect |
-| `--transpile-opt-level` | Circuit optimization level (0-3) | `2` |
-| `--gpus-per-model` | GPUs dedicated per model | `1` |
-| `--only-models` | Comma-separated list of specific models to run | None |
-| `--distributed-ray` | Enable Ray-based distributed execution | `False` |
-| `--ray-address` | Ray cluster address for multi-node | None |
+- `qsvc`
+- `vqc`
+- `qnn`
+- `ensemble`
+- `classical`
+- `all`
 
-##  Project Structure
+Run `python iot_multigpu.py --help` for the full CLI.
 
-```
-quantum-ml-iot-nid/
-├── iot_multigpu.py              # Main experiment script
-├── IoT_Original_Distribution.csv # IoTID20 dataset (download separately)
-├── README.md                    # This file
-├── LICENSE                      # MIT License
-├── results/                     # Output CSVs with metrics
-│   ├── quantum_ml_results_10q_5000s.csv
-│   ├── quantum_ml_results_10q_10000s.csv
-│   └── quantum_ml_results_16q_5000s.csv
-├── checkpoints/                 # Model checkpoints
-├── gpu_logs/                    # GPU utilization logs
-└── kernel_cache/                # Precomputed kernel matrices
-```
+## Outputs
 
-##  Models Evaluated
+The script writes generated artifacts to directories such as:
 
-### Quantum Models (16)
+- `results/`
+- `checkpoints/`
+- `gpu_logs/`
+- `kernel_cache/`
 
-| Category | Models | Description |
-|----------|--------|-------------|
-| **QSVC** | Z, ZZ, Pauli | Quantum kernel SVMs with different feature maps |
-| **QSVC Variants** | Precomputed, Callable, Standard | Different kernel computation strategies |
-| **PegasosQSVC** | Z, ZZ | Stochastic gradient descent quantum SVM |
-| **VQC** | COBYLA, SPSA, ADAM | Variational quantum classifier with different optimizers |
-| **QNN** | EstimatorQNN, SamplerQNN | Quantum neural networks |
-| **Ensembles** | QVE, QWE, QRF | Novel quantum ensemble methods |
+These outputs are excluded from version control.
 
-### Classical Baselines (9)
+## Notes
 
-SVM (Linear, RBF, Polynomial), Random Forest, Gradient Boosting, Logistic Regression, KNN, Decision Tree, Gaussian Naive Bayes
+- Large runs can require substantial GPU memory.
+- The heavy kernel path is designed for GPU execution rather than CPU fallback.
+- Start with a smaller configuration before launching long multi-GPU runs.
 
-##  Experimental Configurations
+## License
 
-| Config | Qubits | Samples | Purpose |
-|--------|--------|---------|---------|
-| 10q/5K | 10 | 5,000 | Baseline performance |
-| 10q/10K | 10 | 10,000 | Sample size scaling |
-| 16q/5K | 16 | 5,000 | Qubit scalability |
-
-##  Technical Details
-
-### Quantum Feature Encoding
-
-- **Z-Feature Map**: Single-qubit rotations, depth O(r), NISQ-friendly
-- **ZZ-Feature Map**: Entangling gates, depth O(r·n), medium expressibility
-- **Pauli-Feature Map**: Maximum expressivity, depth O(r·n²)
-
-### Preprocessing Pipeline
-
-1. **SelectKBest**: Mutual information criterion, select 2n top features
-2. **MinMaxScaler**: Scale to [0, π] for quantum rotation gates
-3. **PCA**: Reduce to exactly n components (matching qubit count)
-
-### GPU Acceleration
-
-- Qiskit Aer GPU-accelerated statevector simulator
-- Single-precision floating point for memory efficiency
-- Transpilation optimization level 2
-- Multi-GPU parallel model evaluation
-
-
-
-##  License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-##  Acknowledgments
-
-- Dataset: [IoTID20](https://ieee-dataport.org/open-access/iot-network-intrusion-dataset) by Ullah & Mahmoud
-- Quantum Framework: [Qiskit](https://qiskit.org/) by IBM
-- This research was conducted using GPU-accelerated quantum simulation
-
-##  Contact
-
-- **GitHub**: [@ocblvck](https://github.com/ocblvck)
-
----
-
-<p align="center">
-  <b> Bridging Quantum Computing and IoT Security </b>
-</p>
+This project is released under the MIT License. See `LICENSE` for details.

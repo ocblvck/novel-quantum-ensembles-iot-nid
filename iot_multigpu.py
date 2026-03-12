@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Quantum ML for IoT - COMPLETE GPU-OPTIMIZED VERSION WITH ALL MODELS + ENSEMBLE METHODS
-Including QSVC, QNN, Quantum Random Forest, and Quantum Ensemble
-Multi-GPU Parallel Processing with Automatic Hardware Detection
-NO CPU FALLBACKS - Pure GPU Acceleration for Quantum Simulations
-
-Author: @ocblvck
-Date: 2025-01-28 18:32:44 UTC
-"""
+"""Multi-GPU quantum ML experiments for IoT intrusion detection."""
 
 # Standard library imports
 from typing import Optional, List, Dict, Tuple, Any, TYPE_CHECKING
@@ -94,6 +86,11 @@ _MODULE_IMPORT_NAME = __name__ if __name__ != '__main__' else None
 GPU_LOGS_DIR = Path("gpu_logs")
 RESULTS_DIR = Path("results")
 CHECKPOINT_DIR = Path("checkpoints")
+
+
+def _local_timestamp() -> str:
+    """Return an ISO-8601 timestamp in the local system timezone."""
+    return datetime.now().astimezone().isoformat(timespec='seconds')
 
 # Shared registries populated by the main process and read by workers
 _CENTRAL_QPY_REGISTRY: Optional[Dict[str, Any]] = None
@@ -236,7 +233,7 @@ def _ensure_ray_initialized(address: Optional[str] = None):
     
     try:
         ray.init(**init_kwargs)
-        logger.info("✅ Ray initialized successfully")
+        logger.info("Ray initialized successfully")
         
         # Log cluster information
         try:
@@ -321,10 +318,10 @@ def _partition_indices(total: int, num_partitions: int) -> List[Tuple[int, int]]
 
 
 # ============================================================================
-# OPTIMIZED CONFIGURATION FOR LARGE-SCALE EXPERIMENTS
+# Runtime configuration
 # ============================================================================
 
-# Model-specific Nyström configuration (preserves model differentiation)
+# Per-model Nyström configuration
 NYSTROM_CONFIG = {
     'QSVC_Standard': {'use_nystrom': False, 'landmarks': 2000},  # Use full kernel by default (Nyström only for large datasets)
     'QSVC_Precomputed': {'use_nystrom': False, 'landmarks': None},  # Full kernel (no Nyström)
@@ -332,14 +329,14 @@ NYSTROM_CONFIG = {
     'PegasosQSVC': {'use_nystrom': False, 'landmarks': None},  # Stochastic (no Nyström)
 }
 
-# GPU optimization parameters
+# GPU execution parameters
 MAX_PARALLEL_GPUS = 8  # Maximum GPUs for parallel kernel chunks
 KERNEL_CHUNK_SIZE = 1024  # Rows per chunk for kernel computation (increased to reduce transfers)
 
 # Fidelity kernel batching safeguards
 FIDELITY_COMPLEX_BYTES = 8  # bytes per amplitude after downcasting statevectors to complex64
 FIDELITY_MIN_CIRCUITS = 1  # allow single-circuit fallback when GPU memory is tight
-FIDELITY_MAX_CIRCUITS = 2  # CRITICAL: baseline cap for 22+ qubit runs to avoid segfaults
+FIDELITY_MAX_CIRCUITS = 2  # Baseline cap for 22+ qubit runs
 FIDELITY_TARGET_BATCH_MEMORY_MB = 128  # aim for sub-128MB of statevector memory per batch
 FIDELITY_DEVICE_RESERVE_MB = 2048  # leave at least 2GB free on the device
 FIDELITY_MEMORY_SAFETY = 1.8  # safety multiplier for transient allocations (increased)
@@ -569,19 +566,11 @@ def _validate_registry_value(val) -> bool:
 _CIRCUIT_MANAGER_PARAMS: Optional[Dict[str, Any]] = None
 _CIRCUIT_MANAGER_CACHE: Dict[int, Any] = {}
 
-# NOTE: Do NOT import Qiskit here. Worker processes must set
-# CUDA_VISIBLE_DEVICES before importing qiskit/aer so that the
-# Aer primitives detect the correct local visible GPU (index 0).
-# Importing Qiskit in the initializer would happen before any
-# per-worker CUDA_VISIBLE_DEVICES is set and can cause Aer to
-# select CPU backends unexpectedly. Workers should call
-# _lazy_qiskit_imports() after they set their environment.
+# Worker processes set CUDA_VISIBLE_DEVICES before importing Qiskit so
+# Aer binds to the local visible GPU rather than falling back to CPU.
 
 def _lazy_qiskit_imports():
     """Lazy import of Qiskit modules to avoid early GPU binding."""
-    # This function is called when needed to import Qiskit symbols
-    # The actual imports are already done conditionally at module level
-    # This is a no-op placeholder for compatibility
     pass
 
 def _set_central_registry(key: str, value: Any) -> None:
@@ -718,17 +707,11 @@ def _get_circuit_manager(gpu_id=0):
     return _CIRCUIT_MANAGER_CACHE[gpu_id]
 
 # ============================================================================
-# STEP 1: CENTRALIZED GPU CIRCUIT MANAGER (PRESERVES COMPLEXITY)
+# Step 1: Centralized GPU circuit manager
 # ============================================================================
 
 class CentralizedGPUCircuitManager:
-    """Centralized circuit management for ALL quantum models
-    
-    CRITICAL: Maintains full circuit complexity for fair comparison
-    - Pre-transpiles all circuit templates on GPU
-    - Preserves model-specific characteristics
-    - Caches compiled circuits for reuse
-    """
+    """Build and cache shared circuit templates for the experiment."""
     
     def __init__(self, num_qubits, num_samples, gpu_id=0):
         self.num_qubits = num_qubits
@@ -741,17 +724,15 @@ class CentralizedGPUCircuitManager:
         self.feature_maps = {}
         self.ansatzes = {}
         
-        # If a central qpy registry exists (set by the master process) and we
-        # are in a worker process, hydrate circuits from qpy bytes instead of
-        # re-transpiling. This avoids redundant, expensive transpilation in
-        # worker subprocesses.
+        # Worker processes hydrate circuit templates from the shared registry
+        # when it is available, which avoids repeating transpilation.
         try:
             in_worker = mp.current_process().name != 'MainProcess'
         except Exception:
             in_worker = False
 
         if in_worker and _CENTRAL_QPY_REGISTRY is not None:
-            logger.info(f"[GPU:{self.gpu_id}] 🔁 Hydrating circuits from central qpy registry (no transpile)")
+            logger.info(f"[GPU:{self.gpu_id}] Hydrating circuits from central registry")
             try:
                 self._hydrate_from_qpy_registry()
             except Exception as e:
@@ -761,24 +742,22 @@ class CentralizedGPUCircuitManager:
             # Pre-compile all standard circuit types
             self._precompile_all_circuits()
 
-        # If we are the main process and we have a central registry proxy, ensure
-        # it is populated (this is a no-op in workers)
+        # Populate the registry in the main process when the proxy is available.
         try:
-                if not in_worker and _CENTRAL_QPY_REGISTRY is not None:
-                    # populate registry with qpy bytes so child workers can hydrate
-                    for k, circ in list(self.feature_maps.items()):
-                        try:
-                            entry = {'qpy_bytes': getattr(circ, 'qpy_bytes', None), 'meta': getattr(circ, 'qpy_meta', None)}
-                            _set_central_registry(k, entry)
-                        except Exception:
-                            _set_central_registry(k, {'qpy_bytes': None, 'meta': None})
+            if not in_worker and _CENTRAL_QPY_REGISTRY is not None:
+                for k, circ in list(self.feature_maps.items()):
+                    try:
+                        entry = {'qpy_bytes': getattr(circ, 'qpy_bytes', None), 'meta': getattr(circ, 'qpy_meta', None)}
+                        _set_central_registry(k, entry)
+                    except Exception:
+                        _set_central_registry(k, {'qpy_bytes': None, 'meta': None})
 
-                    for k, circ in list(self.ansatzes.items()):
-                        try:
-                            entry = {'qpy_bytes': getattr(circ, 'qpy_bytes', None), 'meta': getattr(circ, 'qpy_meta', None)}
-                            _set_central_registry(f"ansatz::{k}", entry)
-                        except Exception:
-                            _set_central_registry(f"ansatz::{k}", {'qpy_bytes': None, 'meta': None})
+                for k, circ in list(self.ansatzes.items()):
+                    try:
+                        entry = {'qpy_bytes': getattr(circ, 'qpy_bytes', None), 'meta': getattr(circ, 'qpy_meta', None)}
+                        _set_central_registry(f"ansatz::{k}", entry)
+                    except Exception:
+                        _set_central_registry(f"ansatz::{k}", {'qpy_bytes': None, 'meta': None})
         except Exception:
             pass
     
@@ -861,10 +840,10 @@ class CentralizedGPUCircuitManager:
         except Exception:
             pass
 
-        logger.info(f"[GPU:{self.gpu_id}] 🔧 Pre-compiling circuit templates (preserving complexity)...")
+        logger.info(f"[GPU:{self.gpu_id}] Pre-compiling circuit templates")
         start_time = time.time()
         
-        # Feature maps with PRESERVED complexity for comparison
+        # Feature maps used in the experiment
         total_circuits = 0
         for map_type in ['Z', 'ZZ', 'Pauli']:
             for reps in [1, 2]:  # Maintain different repetition counts
@@ -884,7 +863,10 @@ class CentralizedGPUCircuitManager:
                 total_circuits += 1
         
         elapsed = time.time() - start_time
-        logger.info(f"[GPU:{self.gpu_id}] ✅ Pre-compiled {len(self.feature_maps)} feature maps, {len(self.ansatzes)} ansatzes in {elapsed:.1f}s")
+        logger.info(
+            f"[GPU:{self.gpu_id}] Pre-compiled {len(self.feature_maps)} feature maps, "
+            f"{len(self.ansatzes)} ansatzes in {elapsed:.1f}s"
+        )
     
     def _compile_feature_map(self, map_type, reps):
         """Compile feature map with FULL complexity"""
@@ -1171,7 +1153,7 @@ def _process_kernel_chunk_worker_optimized(args):
     except Exception:
         pass
 
-    worker_logger.info(f"[GPU:{gpu_id}] ✅ Chunk {chunk_num}/{total_chunks} complete")
+    worker_logger.info(f"[GPU:{gpu_id}] Chunk {chunk_num}/{total_chunks} complete")
     return kernel_chunk
 
 
@@ -1241,18 +1223,11 @@ def _result_writer_process(result_queue, session_id: str):
         pass
 
 # ============================================================================
-# STEP 3: SHARED GPU KERNEL COMPUTER (PRESERVES MODEL VARIANTS)
+# Step 3: Shared GPU kernel computer
 # ============================================================================
 
 class SharedGPUKernelComputer:
-    """Shared kernel computation engine for ALL models
-    
-    CRITICAL: Each model variant uses its specific computation method
-    - QSVC_Standard: Uses Nyström approximation for efficiency
-    - QSVC_Precomputed: Computes FULL kernel matrix
-    - QSVC_Callable: Computes kernel on-demand
-    - PegasosQSVC: Uses stochastic approach
-    """
+    """Shared kernel computation engine used across model variants."""
     
     def __init__(self, circuit_manager, gpu_id=0, batch_size=1024):
         self.circuit_manager = circuit_manager
@@ -1280,7 +1255,7 @@ class SharedGPUKernelComputer:
             pass
     
     def _create_gpu_simulator(self):
-        """Create optimized GPU simulator"""
+        """Create the shared GPU simulator for this process."""
         return _get_shared_aer_simulator(self.gpu_id)
 
     def _estimate_max_circuits_per_eval(self) -> int:
@@ -1289,7 +1264,7 @@ class SharedGPUKernelComputer:
         cap = _fidelity_cap_for_qubits(num_qubits)
 
         try:
-            # EMERGENCY OVERRIDE: For 22+ qubits, NEVER exceed 1 circuit per eval
+            # Keep 22+ qubit batches at one circuit per evaluation.
             if num_qubits >= 22:
                 return max(FIDELITY_MIN_CIRCUITS, 1)
 
@@ -1418,7 +1393,7 @@ class SharedGPUKernelComputer:
         n_train = len(X_train)
         n_test = len(X_test) if X_test is not None else 0
         
-        logger.info(f"[GPU:{self.gpu_id}] 🚀 Nyström approximation")
+        logger.info(f"[GPU:{self.gpu_id}] Nyström approximation")
         logger.info(f"[GPU:{self.gpu_id}] Dataset: {n_train} train, {n_test} test")
         logger.info(f"[GPU:{self.gpu_id}] Landmarks: {n_landmarks}")
         
@@ -1560,7 +1535,7 @@ class SharedGPUKernelComputer:
                     manager.reap_terminated()
                     worker_status = manager.worker_status()
                     
-                    # CRITICAL FIX: Immediately detect crashed workers
+                    # Detect worker exits before waiting indefinitely.
                     crashed_workers = [
                         gid for gid, status in worker_status.items() 
                         if 'exit' in status or status == 'stopped'
@@ -1932,21 +1907,18 @@ class SharedGPUKernelComputer:
         ):
             return self._evaluate_kernel_with_circuit_cuts(X_left, X_right, circuit_key)
 
-        # EMERGENCY: For 22+ qubits, evaluate row-by-row AND chunk X_right to prevent creating
-        # thousands of circuit objects at once. 1 row × 2000 cols = 2000 circuits is too much.
+        # For 22+ qubits, evaluate one row at a time and keep X_right chunks small.
         num_qubits = self.circuit_manager.num_qubits
         if num_qubits >= 22:
             kernel_block = np.zeros((X_left.shape[0], X_right.shape[0]), dtype=np.float32)
-            # ULTRA-AGGRESSIVE chunking for 22+ qubits: only 5 circuits per evaluate call
-            # This minimizes GPU memory pressure per kernel.evaluate() invocation
             max_right_cols = max(1, 5)  # VERY small to avoid crashes
             for i in range(X_left.shape[0]):
                 row_results = []
                 for j_start in range(0, X_right.shape[0], max_right_cols):
                     j_end = min(j_start + max_right_cols, X_right.shape[0])
                     
-                    # CRITICAL: Recreate fidelity kernel EVERY batch to ensure fresh GPU state
-                    # This prevents AER internal GPU buffer accumulation
+                    # Recreate the fidelity kernel for each tiny batch to keep
+                    # long runs from accumulating GPU state.
                     fidelity_kernel = _get_shared_fidelity_kernel(
                         circuit_key=circuit_key,
                         num_qubits=self.circuit_manager.num_qubits,
@@ -1960,9 +1932,7 @@ class SharedGPUKernelComputer:
                         X_right[j_start:j_end]
                     )
                     row_results.append(np.asarray(np.real(chunk_result), dtype=np.float32))
-                    # Clear GPU memory after EACH tiny batch
                     clear_gpu_memory(self.gpu_id)
-                # Concatenate column chunks
                 kernel_block[i:i+1, :] = np.concatenate(row_results, axis=1)
         else:
             fidelity_kernel = _get_shared_fidelity_kernel(
@@ -1983,16 +1953,13 @@ class SharedGPUKernelComputer:
         
         num_qubits = int(getattr(self.circuit_manager, 'num_qubits', 0))
         
-        # EMERGENCY OVERRIDE: For 22+ qubits, the total circuit count (rows × cols)
-        # must stay extremely low to avoid worker crashes. Force tiny chunk size.
+        # Keep the total circuit count small for 22+ qubit runs.
         if num_qubits >= 22:
-            # CRITICAL: At 22+ qubits, each circuit pair costs ~32MB GPU memory.
-            # Total circuits per batch = rows × cols. Cap at 32 total circuits max.
             emergency_cap = max(1, 32 // max(1, n_columns))
             result = max(1, min(emergency_cap, 4))
             try:
                 logger.warning(
-                    f"[GPU:{self.gpu_id}] EMERGENCY chunk sizing for {num_qubits} qubits: "
+                    f"[GPU:{self.gpu_id}] Conservative chunk sizing for {num_qubits} qubits: "
                     f"chunk_rows={result}, n_columns={n_columns}, "
                     f"total_circuits_per_batch={result * n_columns} (cap: 32)"
                 )
@@ -2099,8 +2066,7 @@ class BatchProcessingPipeline:
         except Exception:
             pass
         
-        # Lazily initialize global GPU manager here in the main process so
-        # worker processes do not re-run GPU detection at import time.
+        # Initialize the GPU manager in the main process only.
         global gpu_manager
         if gpu_manager is None:
             try:
@@ -2117,7 +2083,7 @@ class BatchProcessingPipeline:
 
         # Create centralized circuit manager
         logger.info("=" * 80)
-        logger.info("🔧 INITIALIZING CENTRALIZED GPU CIRCUIT MANAGER")
+        logger.info("Initializing centralized GPU circuit manager")
         logger.info("=" * 80)
         
         self.circuit_manager = CentralizedGPUCircuitManager(
@@ -2126,10 +2092,8 @@ class BatchProcessingPipeline:
             gpu_id=0
         )
 
-        # Create a Manager-backed registry containing qpy bytes for all
-        # precompiled circuits so worker processes can hydrate without
-        # re-transpiling. This proxy will be passed to ProcessPoolExecutor
-        # worker initializers.
+        # Store serialized circuit templates in a manager-backed registry so
+        # worker processes can hydrate them without retranspiling.
         try:
             self._mp_manager = mp.Manager()
             self.central_qpy_registry = self._mp_manager.dict()
@@ -2140,8 +2104,7 @@ class BatchProcessingPipeline:
             except Exception:
                 pass
 
-            # CRITICAL: Populate registry BEFORE creating any worker pools
-            # so workers can hydrate qpy bytes rather than retranspile.
+            # Populate the registry before starting worker pools.
             try:
                 self._populate_central_registry()
             except Exception:
@@ -2213,13 +2176,13 @@ class BatchProcessingPipeline:
         # Pre-warm per-GPU simulators/cache to reduce first-call overhead
         for gpu_id in range(num_gpus):
             try:
-                logger.info(f"⏱️ Pre-warming simulator/cache for GPU {gpu_id}")
+                logger.info(f"Pre-warming simulator/cache for GPU {gpu_id}")
                 _get_shared_aer_simulator(gpu_id)
             except Exception:
                 logger.warning(f"Pre-warm simulator failed for GPU {gpu_id}")
 
         for gpu_id in range(num_gpus):
-            logger.info(f"🚀 Creating SharedGPUKernelComputer for GPU {gpu_id}")
+            logger.info(f"Creating SharedGPUKernelComputer for GPU {gpu_id}")
             kernel_computer = SharedGPUKernelComputer(
                 self.circuit_manager,
                 gpu_id=gpu_id,
@@ -2232,7 +2195,7 @@ class BatchProcessingPipeline:
         except Exception:
             pass
 
-        logger.info("✅ CENTRALIZED SYSTEM INITIALIZED")
+        logger.info("Centralized system initialized")
         logger.info("=" * 80)
 
     def _build_gpu_groups(self) -> List[List[int]]:
@@ -2249,13 +2212,13 @@ class BatchProcessingPipeline:
         return groups
     
     def process_all_models(self, models, X_train, y_train, X_test, y_test):
-        """Process models in TRUE parallel across GPUs"""
+        """Process models in parallel across GPUs."""
         
         logger.info("=" * 80)
-        logger.info("🎯 STARTING PARALLEL BATCH PROCESSING")
-        logger.info(f"📊 Models: {len(models)}")
-        logger.info(f"🖥️  GPUs: {self.num_gpus}")
-        logger.info(f"📐 Data: {len(X_train)} train, {len(X_test)} test")
+        logger.info("Starting parallel batch processing")
+        logger.info(f"Models: {len(models)}")
+        logger.info(f"GPUs: {self.num_gpus}")
+        logger.info(f"Data: {len(X_train)} train, {len(X_test)} test")
         logger.info("=" * 80)
         
         gpu_groups = self._gpu_groups or [list(range(self.num_gpus))]
@@ -2318,9 +2281,9 @@ class BatchProcessingPipeline:
                     try:
                         result = future.result(timeout=7200)
                         all_results.append(result)
-                        logger.info(f"✅ [GPU:{gpu_label}] {model_name} complete")
+                        logger.info(f"[GPU:{gpu_label}] {model_name} complete")
                     except Exception as e:
-                        logger.error(f"❌ [GPU:{gpu_label}] {model_name} failed: {e}")
+                        logger.error(f"[GPU:{gpu_label}] {model_name} failed: {e}")
                         all_results.append({
                             'model': model_name,
                             'status': 'failed',
@@ -2334,7 +2297,7 @@ class BatchProcessingPipeline:
                     pass
         
         logger.info("=" * 80)
-        logger.info(f"✅ BATCH PROCESSING COMPLETE: {len(all_results)}/{len(models)}")
+        logger.info(f"Batch processing complete: {len(all_results)}/{len(models)}")
         logger.info("=" * 80)
         
         return all_results
@@ -2346,7 +2309,7 @@ class BatchProcessingPipeline:
             if _GLOBAL_GPU_WORKER_MANAGER is not None:
                 _GLOBAL_GPU_WORKER_MANAGER.stop()
                 _GLOBAL_GPU_WORKER_MANAGER = None
-                logger.info("✅ GPU worker manager stopped")
+                logger.info("GPU worker manager stopped")
         except NameError:
             pass
         # Shutdown result writer
@@ -2535,7 +2498,7 @@ class GPUManager:
                     self.gpu_locks[i] = threading.Lock()
                     self.gpu_usage[i] = 0
                     
-                logger.info(f"🖥️ Detected {self.gpu_count} GPU(s):")
+                logger.info(f"Detected {self.gpu_count} GPU(s):")
                 for gpu in self.gpu_info:
                     logger.info(f"   GPU {gpu['id']}: {gpu['name']} "
                               f"({gpu['memory_free']:.1f}/{gpu['memory_total']:.1f} GB free) "
@@ -2545,7 +2508,7 @@ class GPUManager:
                 self.gpu_count = 0
         
         if self.gpu_count == 0:
-            raise RuntimeError("❌ No GPUs detected! This script requires GPU support.")
+            raise RuntimeError("No GPUs detected. This script requires GPU support.")
     
     def allocate_gpu(self, preferred_gpu=None):
         """Allocate a GPU for a task"""
@@ -2679,11 +2642,11 @@ def create_gpu_simulator(gpu_id=0, method='statevector', precision='single'):
         if 'gpu' not in backend_name.lower():
             raise RuntimeError(f"GPU simulator not available - got {backend_name} instead")
         
-        logger.info(f"✅ GPU Simulator created with {method} method")
+        logger.info(f"GPU simulator created with {method} method")
         return simulator
     
     except Exception as e:
-        logger.error(f"❌ Failed to create GPU simulator: {e}")
+        logger.error(f"Failed to create GPU simulator: {e}")
         raise RuntimeError(f"GPU simulator required but not available: {e}") from e
 
 def create_gpu_estimator(cuda_device=0):
@@ -2710,10 +2673,9 @@ def create_gpu_estimator(cuda_device=0):
             'method': 'statevector',
             'precision': 'single',
             'max_parallel_threads': optimal_threads,
-            'max_parallel_experiments': 1,
-            'batched_shots_gpu': False,
-            'blocking_enable': True,
-            'blocking_qubits': 5,
+            'max_parallel_experiments': 8,
+            'batched_shots_gpu': True,
+            'blocking_enable': False,
         }
 
         backend_options = dict(base_backend_options)
@@ -2739,7 +2701,7 @@ def create_gpu_estimator(cuda_device=0):
         except Exception as e:
             raise RuntimeError(f"Failed to validate GPU-backed AerEstimator: {e}") from e
 
-    logger.info(f"✅ GPU Estimator created with {optimal_threads} threads")
+    logger.info(f"GPU estimator created with {optimal_threads} threads")
     return estimator
 
 def create_gpu_sampler(cuda_device=0, shots=1024):
@@ -2766,10 +2728,9 @@ def create_gpu_sampler(cuda_device=0, shots=1024):
             'method': 'statevector',
             'precision': 'single',
             'max_parallel_threads': optimal_threads,
-            'max_parallel_experiments': 1,
-            'batched_shots_gpu': False,
-            'blocking_enable': True,
-            'blocking_qubits': 5,
+            'max_parallel_experiments': 8,
+            'batched_shots_gpu': True,
+            'blocking_enable': False,
         }
 
         backend_options = dict(base_backend_options)
@@ -2799,7 +2760,7 @@ def create_gpu_sampler(cuda_device=0, shots=1024):
         except Exception as e:
             raise RuntimeError(f"Failed to validate AerSampler GPU backend: {e}") from e
 
-    logger.info(f"✅ GPU Sampler created with {optimal_threads} threads")
+    logger.info(f"GPU sampler created with {optimal_threads} threads")
     return sampler
 
 
@@ -3490,9 +3451,8 @@ def _create_transient_fidelity_kernel(circuit_key: str, num_qubits: int, gpu_id:
 # SHARED GPU SIMULATOR / KERNEL HELPERS
 # =========================================================================
 
-# IMPORTANT: process-local caches only. Each process (main or worker) will keep
-# its own small cache of simulators/kernels. We avoid storing GPU-bound objects
-# in a central sharable structure to prevent cross-process reuse and OOM.
+# Process-local caches only. Each process keeps its own simulator and kernel
+# objects to avoid cross-process GPU reuse.
 #
 # _PROCESS_LOCAL_SIMULATORS and _PROCESS_LOCAL_FIDELITY_KERNELS are plain
 # dicts keyed by (gpu_id, method) and (gpu_id, circuit_key) respectively.
@@ -3731,7 +3691,7 @@ def _gpu_worker_loop(task_queue: MPQueue, result_queue: MPQueue, shm_registry: D
     import traceback
     
     try:
-        # ENTIRE WORKER LOGIC IN MASSIVE TRY-CATCH
+        # Keep fatal worker failures visible to the parent process.
         _gpu_worker_loop_impl(task_queue, result_queue, shm_registry, gpu_id)
     except Exception as fatal_err:
         # Write to stderr (will be captured by parent)
@@ -3879,9 +3839,7 @@ def _gpu_worker_loop_impl(task_queue: MPQueue, result_queue: MPQueue, shm_regist
                     X2_chunk = cupy_mod.asnumpy(local_device_arrays['X2'][s2:e2, :])
                 else:
                     if 'X1' in local_host_arrays and 'X2' in local_host_arrays:
-                        # CRITICAL FIX: Extract ROWS from shared memory arrays
-                        # X1 shape: (n1, n_features), we want rows s1:e1
-                        # X2 shape: (n2, n_features), we want rows s2:e2
+                        # Slice rows directly from the shared arrays.
                         X1_chunk = local_host_arrays['X1'][s1:e1, :]
                         X2_chunk = local_host_arrays['X2'][s2:e2, :]
                     else:
@@ -3900,14 +3858,17 @@ def _gpu_worker_loop_impl(task_queue: MPQueue, result_queue: MPQueue, shm_regist
                             except Exception:
                                 pass
 
-                # EMERGENCY: For 22+ qubits, force max_circuits to 1 to prevent segfaults
+                # Keep the per-call circuit count at one for 22+ qubit runs.
                 num_qubits = task.get('num_qubits', 0)
                 chunk_rows = e1 - s1
                 chunk_cols = e2 - s2
                 if num_qubits >= 22:
                     max_circuits = 1
                     try:
-                        worker_logger.warning(f"[GPU:{gpu_id}] EMERGENCY: qubits={num_qubits}, chunk_size={chunk_rows}×{chunk_cols}, forcing max_circuits=1")
+                        worker_logger.warning(
+                            f"[GPU:{gpu_id}] qubits={num_qubits}, chunk_size={chunk_rows}×{chunk_cols}, "
+                            "forcing max_circuits=1"
+                        )
                     except Exception:
                         pass
                 else:
@@ -4130,7 +4091,12 @@ def _get_shared_aer_simulator(gpu_id: int = 0, method: str = 'statevector') -> A
             except Exception:
                 pass
 
-            simulator = AerSimulator(method=method, device='GPU', precision='single')
+            simulator = AerSimulator(
+                method=method,
+                device='GPU',
+                precision='single',
+                cuStateVec_enable=True
+            )
             # Validate the backend is actually GPU-enabled. If Aer was built
             # without CUDA support it may return a CPU backend despite the
             # request; fail loudly in that case.
@@ -4144,12 +4110,11 @@ def _get_shared_aer_simulator(gpu_id: int = 0, method: str = 'statevector') -> A
 
             simulator.set_options(
                 max_parallel_threads=get_optimal_thread_count(gpu_id),
-                max_parallel_experiments=1,
-                batched_shots_gpu=False,
-                blocking_enable=True,
-                blocking_qubits=5,
+                max_parallel_experiments=8,
+                batched_shots_gpu=True,
+                blocking_enable=False,
                 precision='single',
-                max_memory_mb=16384
+                max_memory_mb=24000
             )
 
             # Store in process-local cache and register lightweight metadata
@@ -4324,7 +4289,7 @@ class ThreadSafeResultsManager:
         """Save result"""
         with self.lock:
             result['gpu_id'] = gpu_id
-            result['timestamp'] = datetime.utcnow().isoformat()
+            result['timestamp'] = _local_timestamp()
             
             self.results.append(result)
             
@@ -4367,7 +4332,7 @@ class ThreadSafeResultsManager:
             self._save_checkpoint()
 
             gpu_str = f"GPU:{gpu_id}" if gpu_id >= 0 else "CPU"
-            logger.info(f"💾 [{gpu_str}] Saved result for {result['model']}")
+            logger.info(f"[{gpu_str}] Saved result for {result['model']}")
 
 
     
@@ -4378,7 +4343,7 @@ class ThreadSafeResultsManager:
             'session_id': self.session_id,
             'completed_models': list(self.completed_models),
             'gpu_timings': self.gpu_timings,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': _local_timestamp(),
             'total_models_completed': len(self.completed_models)
         }
         
@@ -4435,7 +4400,7 @@ def _enqueue_or_save_result(result: dict, gpu_id: int, session_id: str):
 # ============================================================================
 
 def create_unique_feature_map(num_qubits: int, feature_map_type: str, reps: int = 2):
-    """Create feature map with unique parameters - PRESERVES COMPLEXITY"""
+    """Create a feature map with unique parameters."""
     try:
         _lazy_qiskit_imports()
     except Exception:
@@ -4823,12 +4788,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                                     session_id: str, gpu_id: int,
                                     num_qubits: int, num_samples: int,
                                     available_gpus: Optional[List[int]] = None):
-    """Train quantum model using centralized GPU management
-    
-    PRESERVES MODEL DIFFERENTIATION:
-    - Each QSVC variant uses its specific kernel computation method
-    - Circuit complexity is maintained for fair comparison
-    """
+    """Train one quantum model with centralized GPU management."""
     
     # Normalize GPU assignment
     assigned_gpus: List[int] = []
@@ -4847,9 +4807,9 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
     gpu_id = primary_gpu
     gpu_label = ','.join(str(g) for g in assigned_gpus)
 
-    # CRITICAL FIX: Set CUDA visibility to PRIMARY GPU only for this worker
-    # The worker will use local device 0, which maps to the primary physical GPU
-    # Other GPUs in assigned_gpus are used for parallel kernel chunk distribution
+    # Restrict visibility to the primary GPU for this worker. Local device 0
+    # then maps to that GPU, while the remaining GPU ids stay available for
+    # chunk scheduling in higher-level coordination.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(primary_gpu)
     os.environ['NUMBA_CUDA_DEVICE'] = '0'
     local_cuda_device = 0
@@ -4861,14 +4821,11 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
     # Store full GPU list for kernel computer to use for parallel chunking
     available_gpus = list(assigned_gpus)
 
-    # After setting per-process CUDA visibility, import Qiskit/Aer symbols
-    # so that Aer picks up the correct local visible GPU (index 0). This
-    # must happen before any CentralizedGPUCircuitManager hydration or
-    # kernel/sampler/estimator creation.
+    # Import Qiskit after CUDA visibility is set so Aer binds to the local
+    # visible device inside this worker.
     try:
         _lazy_qiskit_imports()
     except Exception:
-        # Let downstream code raise a clear error if imports fail.
         pass
     
     # Initialize circuit manager parameters in-process only if not already
@@ -4879,9 +4836,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
         except Exception:
             _init_circuit_manager_worker(num_qubits, num_samples)
 
-    # Get circuit manager (hydrate from central qpy registry if provided).
-    # NOTE: after setting CUDA_VISIBLE_DEVICES above we must pass the local
-    # visible device index (0) to GPU libraries. Keep `gpu_id` for logging only.
+    # Use local device index 0 after restricting CUDA visibility above.
     circuit_manager = _get_circuit_manager(local_cuda_device)
 
     # Reuse a shared kernel computer so model variants can share cached kernels
@@ -4895,7 +4850,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
     results_manager = ThreadSafeResultsManager(session_id)
     
     if results_manager.is_model_completed(model_name):
-        logger.info(f"[GPU:{gpu_id}] ⏩ Skipping {model_name} (already completed)")
+        logger.info(f"[GPU:{gpu_id}] Skipping {model_name} (already completed)")
         return
     
     num_features = X_train.shape[1]
@@ -4908,7 +4863,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
     }
     
     try:
-        logger.info(f"[GPU:{gpu_id}] 🔥 Training {model_name} with {num_features} features")
+        logger.info(f"[GPU:{gpu_id}] Training {model_name} with {num_features} features")
         start_time = time.time()
         
         # Get circuit configuration
@@ -5018,7 +4973,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
         
         elif model_type == 'VQC':
             optimizer_name = config.get('optimizer', 'COBYLA')
-            logger.info(f"[GPU:{gpu_id}] 🎛️ VQC with {optimizer_name} optimizer")
+            logger.info(f"[GPU:{gpu_id}] VQC with {optimizer_name} optimizer")
             logger.info(f"[GPU:{gpu_id}] Training data shape: {X_train.shape}, Test data shape: {X_test.shape}")
             
             # Get pre-compiled circuits
@@ -5026,11 +4981,11 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
             ansatz = circuit_manager.ansatzes.get(f"RealAmplitudes_reps2")
             
             if feature_map is None or ansatz is None:
-                logger.error(f"[GPU:{gpu_id}] ❌ Missing pre-compiled circuits!")
+                logger.error(f"[GPU:{gpu_id}] Missing pre-compiled circuits")
                 raise RuntimeError("Pre-compiled circuits not found in cache")
             
-            logger.info(f"[GPU:{gpu_id}] ✅ Using pre-transpiled feature_map: {feature_map.num_qubits}q, {feature_map.num_parameters} params")
-            logger.info(f"[GPU:{gpu_id}] ✅ Using pre-transpiled ansatz: {ansatz.num_qubits}q, {ansatz.num_parameters} params")
+            logger.info(f"[GPU:{gpu_id}] Using pre-transpiled feature_map: {feature_map.num_qubits}q, {feature_map.num_parameters} params")
+            logger.info(f"[GPU:{gpu_id}] Using pre-transpiled ansatz: {ansatz.num_qubits}q, {ansatz.num_parameters} params")
             
             # Adaptive iteration count based on dataset size
             base_maxiter = 100 if num_samples <= 1000 else (50 if num_samples <= 5000 else 30)
@@ -5049,7 +5004,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                 iteration_state['count'] += 1
                 elapsed = time.time() - iteration_state['start_time']
                 logger.info(
-                    f"[GPU:{gpu_id}] 📈 VQC_{optimizer_name} iter {iteration_state['count']}: "
+                    f"[GPU:{gpu_id}] VQC_{optimizer_name} iter {iteration_state['count']}: "
                     f"loss={loss:.6f}, elapsed={elapsed:.1f}s"
                 )
             
@@ -5062,9 +5017,9 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
             
             logger.info(f"[GPU:{gpu_id}] Creating GPU Sampler primitive (shots=2048)...")
             sampler = create_gpu_sampler(local_cuda_device, shots=2048)
-            logger.info(f"[GPU:{gpu_id}] ✅ GPU Sampler created successfully")
+            logger.info(f"[GPU:{gpu_id}] GPU sampler created successfully")
             
-            logger.info(f"[GPU:{gpu_id}] 🚀 Starting VQC training with {optimizer_name} (maxiter={base_maxiter})...")
+            logger.info(f"[GPU:{gpu_id}] Starting VQC training with {optimizer_name} (maxiter={base_maxiter})...")
             
             # Train VQC with callback
             vqc = VQC(
@@ -5077,12 +5032,12 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
             
             logger.info(f"[GPU:{gpu_id}] Calling vqc.fit() on {len(X_train)} samples...")
             vqc.fit(X_train, y_train)
-            logger.info(f"[GPU:{gpu_id}] ✅ VQC Training complete! Running predictions on {len(X_test)} samples...")
+            logger.info(f"[GPU:{gpu_id}] VQC training complete. Running predictions on {len(X_test)} samples...")
             y_pred = vqc.predict(X_test)
-            logger.info(f"[GPU:{gpu_id}] ✅ VQC Predictions complete!")
+            logger.info(f"[GPU:{gpu_id}] VQC predictions complete")
         
         elif model_type.startswith('QNN'):
-            logger.info(f"[GPU:{gpu_id}] 🧠 QNN model: {model_type}")
+            logger.info(f"[GPU:{gpu_id}] QNN model: {model_type}")
             logger.info(f"[GPU:{gpu_id}] Training data shape: {X_train.shape}, Test data shape: {X_test.shape}")
             
             # Get pre-transpiled circuits from cache
@@ -5090,11 +5045,11 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
             ansatz = circuit_manager.ansatzes.get(f"RealAmplitudes_reps2")
             
             if feature_map is None or ansatz is None:
-                logger.error(f"[GPU:{gpu_id}] ❌ Missing pre-compiled circuits! feature_map={feature_map is not None}, ansatz={ansatz is not None}")
+                logger.error(f"[GPU:{gpu_id}] Missing pre-compiled circuits. feature_map={feature_map is not None}, ansatz={ansatz is not None}")
                 raise RuntimeError("Pre-compiled circuits not found in cache")
             
-            logger.info(f"[GPU:{gpu_id}] ✅ Using pre-transpiled feature_map with {feature_map.num_parameters} params")
-            logger.info(f"[GPU:{gpu_id}] ✅ Using pre-transpiled ansatz with {ansatz.num_parameters} params")
+            logger.info(f"[GPU:{gpu_id}] Using pre-transpiled feature_map with {feature_map.num_parameters} params")
+            logger.info(f"[GPU:{gpu_id}] Using pre-transpiled ansatz with {ansatz.num_parameters} params")
             
             # Combine circuits
             qc = QuantumCircuit(num_qubits)
@@ -5113,7 +5068,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                 elapsed = now - iteration_state['start_time']
                 # Log every iteration for visibility
                 logger.info(
-                    f"[GPU:{gpu_id}] 📈 {model_name} iter {iteration_state['count']}: "
+                    f"[GPU:{gpu_id}] {model_name} iter {iteration_state['count']}: "
                     f"loss={loss:.6f}, elapsed={elapsed:.1f}s"
                 )
                 iteration_state['last_log'] = now
@@ -5125,7 +5080,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                 
                 logger.info(f"[GPU:{gpu_id}] Creating GPU Estimator primitive...")
                 estimator = create_gpu_estimator(local_cuda_device)
-                logger.info(f"[GPU:{gpu_id}] ✅ GPU Estimator created successfully")
+                logger.info(f"[GPU:{gpu_id}] GPU estimator created successfully")
                 
                 # Create observables for multi-class output
                 observables: List[SparsePauliOp] = []
@@ -5148,11 +5103,11 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                     observables=observables if len(observables) > 1 else observables[0],
                     estimator=estimator
                 )
-                logger.info(f"[GPU:{gpu_id}] ✅ EstimatorQNN created: input_params={qnn.num_inputs}, weight_params={qnn.num_weights}")
+                logger.info(f"[GPU:{gpu_id}] EstimatorQNN created: input_params={qnn.num_inputs}, weight_params={qnn.num_weights}")
                 
                 # Use SPSA with adaptive iterations and progress callback
                 maxiter = base_maxiter
-                logger.info(f"[GPU:{gpu_id}] 🚀 Starting EstimatorQNN training with SPSA (maxiter={maxiter})...")
+                logger.info(f"[GPU:{gpu_id}] Starting EstimatorQNN training with SPSA (maxiter={maxiter})...")
                 
                 classifier = NeuralNetworkClassifier(
                     qnn,
@@ -5163,9 +5118,9 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                 
                 logger.info(f"[GPU:{gpu_id}] Calling classifier.fit() on {len(X_train)} samples...")
                 classifier.fit(X_train, y_train)
-                logger.info(f"[GPU:{gpu_id}] ✅ Training complete! Running predictions on {len(X_test)} samples...")
+                logger.info(f"[GPU:{gpu_id}] Training complete. Running predictions on {len(X_test)} samples...")
                 y_pred = classifier.predict(X_test)
-                logger.info(f"[GPU:{gpu_id}] ✅ Predictions complete!")
+                logger.info(f"[GPU:{gpu_id}] Predictions complete")
             
             elif model_type == 'QNN_Sampler':
                 from qiskit_machine_learning.neural_networks import SamplerQNN
@@ -5173,7 +5128,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                 
                 logger.info(f"[GPU:{gpu_id}] Creating GPU Sampler primitive (shots=2048)...")
                 sampler = create_gpu_sampler(local_cuda_device, shots=2048)
-                logger.info(f"[GPU:{gpu_id}] ✅ GPU Sampler created successfully")
+                logger.info(f"[GPU:{gpu_id}] GPU sampler created successfully")
                 
                 def parity(x):
                     return f"{x:b}".count('1') % 2
@@ -5186,11 +5141,11 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                     output_shape=2,
                     sampler=sampler
                 )
-                logger.info(f"[GPU:{gpu_id}] ✅ SamplerQNN created: input_params={qnn.num_inputs}, weight_params={qnn.num_weights}")
+                logger.info(f"[GPU:{gpu_id}] SamplerQNN created: input_params={qnn.num_inputs}, weight_params={qnn.num_weights}")
                 
                 # Use SPSA with adaptive iterations and progress callback
                 maxiter = base_maxiter
-                logger.info(f"[GPU:{gpu_id}] 🚀 Starting SamplerQNN training with SPSA (maxiter={maxiter})...")
+                logger.info(f"[GPU:{gpu_id}] Starting SamplerQNN training with SPSA (maxiter={maxiter})...")
                 
                 classifier = NeuralNetworkClassifier(
                     qnn,
@@ -5200,9 +5155,9 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
                 
                 logger.info(f"[GPU:{gpu_id}] Calling classifier.fit() on {len(X_train)} samples...")
                 classifier.fit(X_train, y_train)
-                logger.info(f"[GPU:{gpu_id}] ✅ Training complete! Running predictions on {len(X_test)} samples...")
+                logger.info(f"[GPU:{gpu_id}] Training complete. Running predictions on {len(X_test)} samples...")
                 y_pred = classifier.predict(X_test)
-                logger.info(f"[GPU:{gpu_id}] ✅ Predictions complete!")
+                logger.info(f"[GPU:{gpu_id}] Predictions complete")
             else:
                 raise ValueError(f"Unknown QNN type: {model_type}")
         
@@ -5218,7 +5173,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
             **metrics
         })
         
-        logger.info(f"[GPU:{gpu_id}] ✅ {model_name}: Acc={metrics['accuracy']:.4f}, "
+        logger.info(f"[GPU:{gpu_id}] {model_name}: Acc={metrics['accuracy']:.4f}, "
                    f"F1={metrics['f1_score']:.4f}, Time={train_time:.2f}s")
 
         # Save results (enqueue to central writer when available)
@@ -5227,7 +5182,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
         return result
 
     except Exception as e:
-        logger.error(f"[GPU:{gpu_id}] ❌ {model_name} failed: {e}")
+        logger.error(f"[GPU:{gpu_id}] {model_name} failed: {e}")
         import traceback
         traceback.print_exc()
         result['error'] = str(e)[:200]
@@ -5241,7 +5196,7 @@ def train_quantum_model_centralized(model_name: str, model_type: str, config: di
 def train_quantum_random_forest_gpu(X_train, y_train, X_test, y_test, num_qubits,
                                     session_id: str, gpu_id):
     """Train QuantumRandomForest model on specific GPU"""
-    # CRITICAL FIX: After setting CUDA_VISIBLE_DEVICES, use local device 0
+    # After setting CUDA_VISIBLE_DEVICES, use local device 0.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     os.environ['NUMBA_CUDA_DEVICE'] = '0'  # Always 0 after visibility restriction
     
@@ -5270,7 +5225,7 @@ def train_quantum_random_forest_gpu(X_train, y_train, X_test, y_test, num_qubits
             
             metrics = calculate_all_metrics(y_test, y_pred, train_time=train_time)
             
-            logger.info(f"[GPU:{gpu_id}] ✅ {model_name}: Acc={metrics['accuracy']:.4f}, "
+            logger.info(f"[GPU:{gpu_id}] {model_name}: Acc={metrics['accuracy']:.4f}, "
                        f"F1={metrics['f1_score']:.4f}, Time={train_time:.1f}s")
             
             result = {
@@ -5283,7 +5238,7 @@ def train_quantum_random_forest_gpu(X_train, y_train, X_test, y_test, num_qubits
             _enqueue_or_save_result(result, gpu_id, session_id)
             
         except Exception as e:
-            logger.error(f"[GPU:{gpu_id}] ❌ {model_name} failed: {e}")
+            logger.error(f"[GPU:{gpu_id}] {model_name} failed: {e}")
             result = {'model': model_name, 'type': 'quantum', 'status': 'failed', 'error': str(e)[:200]}
             _enqueue_or_save_result(result, gpu_id, session_id)
         finally:
@@ -5292,7 +5247,7 @@ def train_quantum_random_forest_gpu(X_train, y_train, X_test, y_test, num_qubits
 def train_quantum_voting_ensemble_gpu(X_train, y_train, X_test, y_test, num_qubits,
                                       session_id: str, gpu_id):
     """Train QuantumVotingEnsemble model on specific GPU"""
-    # CRITICAL FIX: After setting CUDA_VISIBLE_DEVICES, use local device 0
+    # After setting CUDA_VISIBLE_DEVICES, use local device 0.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     os.environ['NUMBA_CUDA_DEVICE'] = '0'  # Always 0 after visibility restriction
     results_manager = ThreadSafeResultsManager(session_id)
@@ -5320,7 +5275,7 @@ def train_quantum_voting_ensemble_gpu(X_train, y_train, X_test, y_test, num_qubi
             
             metrics = calculate_all_metrics(y_test, y_pred, train_time=train_time)
             
-            logger.info(f"[GPU:{gpu_id}] ✅ {model_name}: Acc={metrics['accuracy']:.4f}, "
+            logger.info(f"[GPU:{gpu_id}] {model_name}: Acc={metrics['accuracy']:.4f}, "
                        f"F1={metrics['f1_score']:.4f}, Time={train_time:.1f}s")
             
             result = {
@@ -5333,7 +5288,7 @@ def train_quantum_voting_ensemble_gpu(X_train, y_train, X_test, y_test, num_qubi
             _enqueue_or_save_result(result, gpu_id, session_id)
             
         except Exception as e:
-            logger.error(f"[GPU:{gpu_id}] ❌ {model_name} failed: {e}")
+            logger.error(f"[GPU:{gpu_id}] {model_name} failed: {e}")
             result = {'model': model_name, 'type': 'quantum', 'status': 'failed', 'error': str(e)[:200]}
             _enqueue_or_save_result(result, gpu_id, session_id)
         finally:
@@ -5342,7 +5297,7 @@ def train_quantum_voting_ensemble_gpu(X_train, y_train, X_test, y_test, num_qubi
 def train_quantum_weighted_ensemble_gpu(X_train, y_train, X_test, y_test, num_qubits,
                                         session_id: str, gpu_id):
     """Train QuantumWeightedEnsemble model on specific GPU"""
-    # CRITICAL FIX: After setting CUDA_VISIBLE_DEVICES, use local device 0
+    # After setting CUDA_VISIBLE_DEVICES, use local device 0.
     os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
     os.environ['NUMBA_CUDA_DEVICE'] = '0'  # Always 0 after visibility restriction
     results_manager = ThreadSafeResultsManager(session_id)
@@ -5373,7 +5328,7 @@ def train_quantum_weighted_ensemble_gpu(X_train, y_train, X_test, y_test, num_qu
             
             metrics = calculate_all_metrics(y_test, y_pred, train_time=train_time)
             
-            logger.info(f"[GPU:{gpu_id}] ✅ {model_name}: Acc={metrics['accuracy']:.4f}, "
+            logger.info(f"[GPU:{gpu_id}] {model_name}: Acc={metrics['accuracy']:.4f}, "
                        f"F1={metrics['f1_score']:.4f}, Time={train_time:.1f}s")
             
             result = {
@@ -5386,7 +5341,7 @@ def train_quantum_weighted_ensemble_gpu(X_train, y_train, X_test, y_test, num_qu
             _enqueue_or_save_result(result, gpu_id, session_id)
             
         except Exception as e:
-            logger.error(f"[GPU:{gpu_id}] ❌ {model_name} failed: {e}")
+            logger.error(f"[GPU:{gpu_id}] {model_name} failed: {e}")
             result = {'model': model_name, 'type': 'quantum', 'status': 'failed', 'error': str(e)[:200]}
             _enqueue_or_save_result(result, gpu_id, session_id)
         finally:
@@ -5449,7 +5404,7 @@ def train_classical_models(X_train, y_train, X_test, y_test, num_features, sessi
             # Calculate metrics
             metrics = calculate_all_metrics(y_test, y_pred, y_pred_proba, train_time)
             
-            logger.info(f"✅ {model_name}: Acc={metrics['accuracy']:.4f}, "
+            logger.info(f"{model_name}: Acc={metrics['accuracy']:.4f}, "
                        f"F1={metrics['f1_score']:.4f}, Time={train_time:.2f}s")
             
             result = {
@@ -5462,7 +5417,7 @@ def train_classical_models(X_train, y_train, X_test, y_test, num_features, sessi
             _enqueue_or_save_result(result, -1, session_id)
             
         except Exception as e:
-            logger.error(f"❌ {model_name} failed: {e}")
+            logger.error(f"{model_name} failed: {e}")
             result = {
                 'model': model_name,
                 'type': 'classical',
@@ -5550,7 +5505,7 @@ def main_centralized():
     # Skip GPU initialization if running classical models only
     if args.model_group == 'classical':
         print("="*80)
-        print("🔷 CLASSICAL ML PIPELINE")
+        print("CLASSICAL ML PIPELINE")
         print("="*80)
         print(f"Session ID: {session_id}")
         print(f"Configuration: {args.num_qubits} features, {args.sample_size} samples")
@@ -5577,7 +5532,7 @@ def main_centralized():
         
         # Train classical models
         print("\n" + "="*80)
-        print("🔷 TRAINING CLASSICAL MODELS")
+        print("TRAINING CLASSICAL MODELS")
         print("="*80)
         
         try:
@@ -5587,7 +5542,7 @@ def main_centralized():
         
         # Print summary
         print("\n" + "="*80)
-        print("📊 TRAINING SUMMARY")
+        print("TRAINING SUMMARY")
         print("="*80)
         
         results_manager = ThreadSafeResultsManager(session_id)
@@ -5597,16 +5552,15 @@ def main_centralized():
             success_df = results_df[results_df['status'] == 'success']
             
             if not success_df.empty:
-                print(f"\n✅ Successfully trained: {len(success_df)} models")
-                print("\n🏆 TOP MODELS BY ACCURACY:")
+                print(f"\nSuccessfully trained: {len(success_df)} models")
+                print("\nTop models by accuracy:")
                 print("-"*60)
                 
                 for _, row in success_df.nlargest(min(10, len(success_df)), 'accuracy').iterrows():
-                    print(f"🔷 {row['model']:<30} | Acc: {row['accuracy']:.4f} | "
+                    print(f"{row['model']:<30} | Acc: {row['accuracy']:.4f} | "
                           f"F1: {row.get('f1_score', 0):.4f} | Time: {row.get('train_time', 0):.2f}s")
         
         print("="*80)
-        logger.info("🎊 Classical model training complete!")
         return
 
     # Ensure GPU manager is initialized in main process before we query GPUs
@@ -5619,7 +5573,7 @@ def main_centralized():
         return
     
     print("="*80)
-    print("🔥 QUANTUM ML CENTRALIZED GPU PIPELINE 🔥")
+    print("QUANTUM ML CENTRALIZED GPU PIPELINE")
     print("="*80)
     print(f"Session ID: {session_id}")
     print(f"Configuration: {args.num_qubits} qubits, {args.sample_size} samples")
@@ -5660,8 +5614,8 @@ def main_centralized():
         except Exception:
             pass
 
-    print(f"\n🚀 Using {num_gpus} GPU(s) with CENTRALIZED management")
-    print(f"🧮 GPUs per model run: {gpus_per_model}")
+    print(f"\nUsing {num_gpus} GPU(s) with centralized management")
+    print(f"GPUs per model run: {gpus_per_model}")
     print("="*80)
     print(f"Approximation mode: {APPROXIMATION_MODE}")
     if CIRCUIT_CUT_PARTITIONS > 1:
@@ -5825,8 +5779,8 @@ def main_centralized():
     # Initialize batch processing pipeline (skip if ensemble-only)
     if models:
         print("\n" + "="*80)
-        print("🔥 INITIALIZING CENTRALIZED BATCH PROCESSING PIPELINE")
-        print(f"📊 Processing {len(models)} models")
+        print("INITIALIZING CENTRALIZED BATCH PROCESSING PIPELINE")
+        print(f"Processing {len(models)} models")
         print("="*80)
 
         pipeline = BatchProcessingPipeline(
@@ -5844,7 +5798,7 @@ def main_centralized():
     # Process ensemble models if requested
     if args.model_group in ['all', 'quantum', 'ensemble']:
         print("\n" + "="*80)
-        print("🔥 PROCESSING ENSEMBLE MODELS")
+        print("PROCESSING ENSEMBLE MODELS")
         print("="*80)
 
         ensemble_models = [
@@ -5883,14 +5837,14 @@ def main_centralized():
             for model_name, future in futures:
                 try:
                     future.result()
-                    logger.info(f"✅ {model_name} complete")
+                    logger.info(f"{model_name} complete")
                 except Exception as e:
-                    logger.error(f"❌ {model_name} failed: {e}")
+                    logger.error(f"{model_name} failed: {e}")
 
     # Process classical models if requested
     if args.model_group in ['all', 'classical']:
         print("\n" + "="*80)
-        print("🔷 PROCESSING CLASSICAL MODELS")
+        print("PROCESSING CLASSICAL MODELS")
         print("="*80)
         
         try:
@@ -5900,7 +5854,7 @@ def main_centralized():
 
     # Print summary
     print("\n" + "="*80)
-    print("📊 TRAINING SUMMARY")
+    print("TRAINING SUMMARY")
     print("="*80)
 
     results_manager = ThreadSafeResultsManager(session_id)
@@ -5910,12 +5864,12 @@ def main_centralized():
         success_df = results_df[results_df['status'] == 'success']
 
         if not success_df.empty:
-            print(f"\n✅ Successfully trained: {len(success_df)} models")
-            print("\n🏆 TOP MODELS BY ACCURACY:")
+            print(f"\nSuccessfully trained: {len(success_df)} models")
+            print("\nTop models by accuracy:")
             print("-"*60)
 
             for _, row in success_df.nlargest(min(10, len(success_df)), 'accuracy').iterrows():
-                print(f"⚛️ {row['model']:<30} | Acc: {row['accuracy']:.4f} | "
+                print(f"{row['model']:<30} | Acc: {row['accuracy']:.4f} | "
                       f"F1: {row.get('f1_score', 0):.4f} | Time: {row.get('train_time', 0):.1f}s")
 
     print("="*80)
@@ -5928,7 +5882,7 @@ def main_centralized():
     except Exception:
         pass
 
-    logger.info("🎊 Centralized training pipeline complete!")
+    logger.info("Centralized training pipeline complete")
     # If cache-debug enabled, print eviction counters summary
     try:
         if _CACHE_DEBUG:
@@ -6077,8 +6031,8 @@ if __name__ == "__main__":
     # Set multiprocessing start method for CUDA
     mp.set_start_method('spawn', force=True)
     
-    print("🔥 Using CENTRALIZED GPU management pipeline")
-    print("💡 Key features:")
+    print("Using centralized GPU management pipeline")
+    print("Key features:")
     print("   - Pre-compiled circuits (compile once, use everywhere)")
     print("   - Model-specific kernel computation methods")
     print("   - True multi-GPU parallelization")

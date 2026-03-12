@@ -1,36 +1,25 @@
 #!/bin/bash
-# Download script for the IoTID20 dataset
-# The dataset is too large for GitHub (121MB) and must be downloaded separately
 
-echo "========================================"
-echo "IoTID20 Dataset Download Instructions"
-echo "========================================"
-echo ""
-echo "The IoT Network Intrusion Dataset (IoTID20) can be downloaded from:"
-echo ""
-echo "Option 1: Kaggle (Recommended)"
-echo "  URL: https://www.kaggle.com/datasets/subhajournal/iotid20-iot-botnet-dataset"
-echo "  - Create a Kaggle account if needed"
-echo "  - Download 'IoT Network Intrusion Dataset.csv'"
-echo "  - Rename to 'IoT_Original_Distribution.csv'"
-echo ""
-echo "Option 2: IEEE DataPort (Original Source)"
-echo "  URL: https://ieee-dataport.org/open-access/iot-network-intrusion-dataset"
-echo "  - Download the dataset"
-echo "  - Extract and rename to 'IoT_Original_Distribution.csv'"
-echo ""
-echo "Option 3: Using Kaggle CLI"
-echo "  pip install kaggle"
-echo "  kaggle datasets download -d subhajournal/iotid20-iot-botnet-dataset"
-echo "  unzip iotid20-iot-botnet-dataset.zip"
-echo "  mv 'IoT Network Intrusion Dataset.csv' IoT_Original_Distribution.csv"
-echo ""
-echo "========================================"
-echo "Dataset Information:"
-echo "  - Samples: 625,783"
-echo "  - Features: 85 (including labels)"
-echo "  - Classes: Normal, Mirai, DoS, Scan, MITM"
-echo "  - Size: ~121MB"
-echo "========================================"
-echo ""
-echo "After downloading, place 'IoT_Original_Distribution.csv' in this directory."
+cat <<'EOF'
+IoTID20 dataset download
+
+This repository expects the dataset file to be named:
+IoT_Original_Distribution.csv
+
+Download sources:
+
+1. Kaggle
+	https://www.kaggle.com/datasets/subhajournal/iotid20-iot-botnet-dataset
+
+2. IEEE DataPort
+	https://ieee-dataport.org/open-access/iot-network-intrusion-dataset
+
+If you use the Kaggle CLI:
+
+  pip install kaggle
+  kaggle datasets download -d subhajournal/iotid20-iot-botnet-dataset
+  unzip iotid20-iot-botnet-dataset.zip
+  mv 'IoT Network Intrusion Dataset.csv' IoT_Original_Distribution.csv
+
+Place the renamed CSV in this directory before running the script.
+EOF
