@@ -71,6 +71,27 @@ These outputs are excluded from version control.
 - The heavy kernel path is designed for GPU execution rather than CPU fallback.
 - Start with a smaller configuration before launching long multi-GPU runs.
 
+## Authors and citation
+
+This code was written by Chibuike C. Okekeogbu (GitHub handle `ocblvck`), a doctoral researcher at North Carolina A&T State University, with Sayed A. Mostafa and Ahmad Patooghy as co-authors of the published study it implements.
+
+If you use this code or build on it, please cite the paper:
+
+C. C. Okekeogbu, S. A. Mostafa, and A. Patooghy, "Novel Quantum Ensemble Machine Learning Models for IoT Intrusion Detection," in *2026 IEEE 19th Dallas Circuits and Systems Conference (DCAS)*, 2026, pp. 1-6, doi: 10.1109/DCAS69364.2026.11544356.
+
+```bibtex
+@inproceedings{okekeogbu2026quantumensemble,
+  author    = {Okekeogbu, Chibuike C. and Mostafa, Sayed A. and Patooghy, Ahmad},
+  title     = {Novel Quantum Ensemble Machine Learning Models for {IoT} Intrusion Detection},
+  booktitle = {2026 IEEE 19th Dallas Circuits and Systems Conference (DCAS)},
+  year      = {2026},
+  pages     = {1--6},
+  doi       = {10.1109/DCAS69364.2026.11544356}
+}
+```
+
+Reuse under the MIT License below is welcome. Please keep the copyright notice and, where practical, the citation above.
+
 ## License
 
 This project is released under the MIT License. See `LICENSE` for details.
