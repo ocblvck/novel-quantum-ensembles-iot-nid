@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the paper below."
+title: "Quantum ML for IoT Intrusion Detection (implementation of the DCAS 2026 paper)"
+type: software
+authors:
+  - family-names: Okekeogbu
+    given-names: Chibuike C.
+    affiliation: "North Carolina Agricultural and Technical State University"
+repository-code: "https://github.com/ocblvck/novel-quantum-ensembles-iot-nid"
+license: MIT
+preferred-citation:
+  type: conference-paper
+  title: "Novel Quantum Ensemble Machine Learning Models for IoT Intrusion Detection"
+  authors:
+    - family-names: Okekeogbu
+      given-names: Chibuike C.
+    - family-names: Mostafa
+      given-names: Sayed A.
+    - family-names: Patooghy
+      given-names: Ahmad
+  collection-title: "2026 IEEE 19th Dallas Circuits and Systems Conference (DCAS)"
+  year: 2026
+  start: 1
+  end: 6
+  doi: "10.1109/DCAS69364.2026.11544356"
